@@ -2,8 +2,8 @@
 Материалы по курсу Многопоточное программирование для студентов МИЭТ 
 
 ## Лабораторные работы (общий план)
-1. Mutex, RWLock
-2. Condition Variable и семафоры
-3. Future + channel
+1. Создание потоков и процессов
+2. Futex. Mutex, RWLock, Condition Variable и семафоры
+3. Пул потоков, futures/promises
 4. Корутины
 
