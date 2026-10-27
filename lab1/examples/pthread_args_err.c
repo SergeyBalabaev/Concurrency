@@ -21,7 +21,7 @@ void *worker(void *arg) {
 int main(void) {
     pthread_t t[4];
     for (long i = 0; i < 4; i++)
-        pthread_create(&t[i], NULL, worker, &i);   // значение, а не адрес
+        pthread_create(&t[i], NULL, worker, i);   // значение, а не адрес
 
 //    for (long i = 0; i < 4; i++)
 //        pthread_create(&t[i], NULL, worker, &i);   // ОШИБКА: адрес общей i

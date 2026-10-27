@@ -8,6 +8,7 @@ int main(void) {
     if (pid == 0) {                       // потомок станет другой программой
         char *args[] = { "ls", "-l", NULL };
         execvp("ls", args);
+        printf("HELLO!!!!!\n");
         perror("execvp");                 // сюда — только если запуск не удался
         exit(127);
     }

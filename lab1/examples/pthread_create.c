@@ -1,7 +1,6 @@
 #include <pthread.h>
 #include <stdio.h>
 
-
 void *worker(void *arg) {
     printf("поток работает\n");
     return NULL;
