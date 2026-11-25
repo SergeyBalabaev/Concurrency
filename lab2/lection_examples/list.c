@@ -148,7 +148,20 @@ int hoh_add(int key) {
     pthread_mutex_unlock(&pred->lock);
     return r;
 }
-
+/*
+int hoh_add(int key) {
+    node *pred, *curr;
+    hoh_find(key, &pred, &curr);
+    pthread_mutex_unlock(&curr->lock);   
+    int r = 0;
+    if (curr->key != key) {
+        pred->next = new_node(key, curr);
+        r = 1;
+    }
+    pthread_mutex_unlock(&pred->lock);
+    return r;
+}
+*/
 int hoh_remove(int key) {
     node *pred, *curr;
     hoh_find(key, &pred, &curr);

@@ -1,0 +1,878 @@
+<!doctype html><html><head><meta charset=utf8><meta name=viewport content="width=device-width,initial-scale=1,viewport-fit=cover"><style>:root{color-scheme:light;box-sizing:border-box;padding-top:env(safe-area-inset-top,0px);padding-bottom:env(safe-area-inset-bottom,0px)}html{scroll-padding-top:env(safe-area-inset-top,0px)}body{margin:0;padding:0;font:14px -apple-system,BlinkMacSystemFont,sans-serif;background:#fff;color:#000}img{max-width:100%}[hidden]:not([hidden=until-found i]){display:none!important}</style></head><body>
+<title>Гонка потоков: блокировки</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Golos+Text:wght@400;500;600;700&family=JetBrains+Mono:wght@400;600&display=swap">
+<style>
+/* Layout: level list in a left rail, game field to the right; two thread cards side by side, state + log below. */
+:root{
+  --bg:#f4f5f7; --surface:#ffffff; --sunken:#eceef2; --line:#d6dae1; --fg:#1b2230; --muted:#5b6474;
+  --t0:#1f63d1; --t0-tint:#e2ecfc; --t1:#b4520a; --t1-tint:#fbe9da; --t2:#7b3fb3; --t2-tint:#efe6f8; --hl:#d97706;
+  --cs:#8b2e4a; --cs-bg:#f7e9ee; --cs-line:#e3bccb;
+  --ok:#1f7a4d; --ok-bg:#e3f3ea; --bad:#b3261e; --bad-bg:#fbe5e3; --info:#4a5568; --info-bg:#e9edf3;
+  --chg:#fff1a8;
+  --font-ui:"Golos Text", "Segoe UI", system-ui, sans-serif;
+  --font-code:"JetBrains Mono", ui-monospace, "Cascadia Mono", Consolas, monospace;
+}
+@media (prefers-color-scheme: dark){ :root:not([data-theme="light"]){
+  --bg:#13161c; --surface:#1b1f27; --sunken:#232833; --line:#323947; --fg:#e4e8ef; --muted:#9aa3b2;
+  --t0:#6ea4ff; --t0-tint:#1c2c4a; --t1:#f0a060; --t1-tint:#3b2716; --t2:#c49bff; --t2-tint:#2c2140; --hl:#f5b041;
+  --cs:#f08fac; --cs-bg:#2c1b23; --cs-line:#5a3242;
+  --ok:#6fd3a0; --ok-bg:#16301f; --bad:#ff8b80; --bad-bg:#3a1a18; --info:#b8c2d3; --info-bg:#252b36;
+  --chg:#5a4c10; color-scheme:dark;
+}}
+:root[data-theme="dark"]{
+  --bg:#13161c; --surface:#1b1f27; --sunken:#232833; --line:#323947; --fg:#e4e8ef; --muted:#9aa3b2;
+  --t0:#6ea4ff; --t0-tint:#1c2c4a; --t1:#f0a060; --t1-tint:#3b2716; --t2:#c49bff; --t2-tint:#2c2140; --hl:#f5b041;
+  --cs:#f08fac; --cs-bg:#2c1b23; --cs-line:#5a3242;
+  --ok:#6fd3a0; --ok-bg:#16301f; --bad:#ff8b80; --bad-bg:#3a1a18; --info:#b8c2d3; --info-bg:#252b36;
+  --chg:#5a4c10; color-scheme:dark;
+}
+*{box-sizing:border-box}
+html,body{background:var(--bg);color:var(--fg)}
+body{font-family:var(--font-ui);font-size:16px;line-height:1.5;padding-inline:16px;padding-block:16px 32px}
+.app{max-width:1360px;margin:0 auto;display:grid;grid-template-columns:250px minmax(0,1fr);gap:24px;align-items:start}
+@media (max-width:820px){.app{grid-template-columns:minmax(0,1fr);gap:16px}}
+
+/* rail */
+.rail{position:sticky;top:calc(env(safe-area-inset-top,0px) + 16px);display:flex;flex-direction:column;gap:14px;min-width:0}
+@media (max-width:820px){.rail{position:static}}
+.brand h1{font-size:1.35rem;margin:0;font-weight:700;letter-spacing:-.01em;text-wrap:balance}
+.brand p{margin:4px 0 0;color:var(--muted);font-size:.88rem}
+.levels{list-style:none;margin:0;padding:0;display:flex;flex-direction:column;gap:2px}
+@media (max-width:820px){.levels{flex-direction:row;overflow-x:auto;gap:6px;padding-bottom:4px}}
+.levels button{all:unset;box-sizing:border-box;cursor:pointer;display:grid;grid-template-columns:1.6em minmax(0,1fr) 1.2em;gap:6px;align-items:baseline;width:100%;padding:7px 10px;border-radius:6px;font-size:.92rem;color:var(--fg)}
+@media (max-width:820px){.levels button{grid-template-columns:auto auto;white-space:nowrap;border:1px solid var(--line);background:var(--surface)} .levels .lname{display:none}}
+.levels button:hover{background:var(--sunken)}
+.levels button[aria-current="true"]{background:var(--surface);box-shadow:inset 0 0 0 1px var(--line);font-weight:600}
+.levels button:focus-visible{outline:2px solid var(--t0);outline-offset:1px}
+.levels .num{font-family:var(--font-code);color:var(--muted);font-size:.85rem;font-variant-numeric:tabular-nums}
+.levels .mark{color:var(--ok);font-weight:700;text-align:right}
+.levels .mark.lock::after{content:"∞";color:var(--muted);font-weight:400}
+.rail-foot{display:flex;flex-direction:column;gap:8px;font-size:.82rem;color:var(--muted)}
+@media (max-width:820px){.rail-foot{display:none}}
+kbd{font-family:var(--font-code);font-size:.78rem;border:1px solid var(--line);border-bottom-width:2px;border-radius:4px;padding:0 5px;background:var(--surface);color:var(--fg)}
+.linkbtn{all:unset;cursor:pointer;color:var(--muted);text-decoration:underline;text-underline-offset:3px;font-size:.82rem}
+.linkbtn:focus-visible{outline:2px solid var(--t0)}
+
+/* main */
+main{display:flex;flex-direction:column;gap:16px;min-width:0}
+.lvl-head{display:flex;flex-direction:column;gap:6px}
+.eyebrow{font-size:.78rem;letter-spacing:.08em;text-transform:uppercase;color:var(--muted);font-weight:600}
+.lvl-head h2{margin:0;font-size:1.6rem;line-height:1.2;text-wrap:balance}
+.goal{margin:0;font-size:1.02rem;max-width:70ch}
+.hintrow{display:flex;flex-wrap:wrap;gap:10px;align-items:center}
+.hint{color:var(--muted);font-size:.94rem;max-width:70ch}
+
+.btn{font:inherit;font-size:.92rem;cursor:pointer;border:1px solid var(--line);background:var(--surface);color:var(--fg);border-radius:6px;padding:6px 12px;display:inline-flex;gap:8px;align-items:center}
+.btn:hover:not(:disabled){background:var(--sunken)}
+.btn:disabled{opacity:.45;cursor:not-allowed}
+.btn:focus-visible{outline:2px solid var(--t0);outline-offset:1px}
+.btn kbd{font-size:.72rem}
+.btn.primary{border-color:var(--fg);background:var(--fg);color:var(--bg)}
+.btn.primary:hover:not(:disabled){opacity:.9;background:var(--fg)}
+
+/* threads */
+.threads{display:grid;grid-template-columns:repeat(auto-fit,minmax(min(100%,330px),1fr));gap:14px}
+.thread{background:var(--surface);border:1px solid var(--line);border-radius:8px;min-width:0;display:flex;flex-direction:column;border-top:4px solid var(--tc)}
+.thread[data-t="0"]{--tc:var(--t0);--tt:var(--t0-tint)}
+.thread[data-t="1"]{--tc:var(--t1);--tt:var(--t1-tint)}
+.thread[data-t="2"]{--tc:var(--t2);--tt:var(--t2-tint)}
+.th-head{display:flex;flex-wrap:wrap;gap:8px 10px;align-items:center;padding:10px 12px;border-bottom:1px solid var(--line)}
+.th-name{font-weight:600;color:var(--tc);margin-right:auto}
+.badge{font-size:.78rem;font-weight:600;padding:2px 8px;border-radius:999px;border:1px solid var(--line);color:var(--muted);white-space:nowrap}
+.badge::before{content:"";display:inline-block;width:7px;height:7px;border-radius:50%;background:currentColor;margin-right:6px;vertical-align:1px}
+.badge.run{color:var(--fg)}
+.badge.spin{color:var(--t1)}
+.thread[data-t="1"] .badge.spin{color:var(--t1)}
+.badge.sleep{color:var(--info);background:var(--info-bg)}
+.badge.blocked{color:var(--info);background:var(--info-bg)}
+.badge.cs{color:var(--cs);background:var(--cs-bg);border-color:var(--cs-line)}
+.badge.done{color:var(--ok);background:var(--ok-bg)}
+.code{font-family:var(--font-code);font-size:.95rem;line-height:1.55;padding:8px 0;overflow-x:auto}
+.ln{display:grid;grid-template-columns:2.1em max-content;align-items:center;padding:1px 12px 1px 0;white-space:pre;position:relative;min-width:100%}
+.ln .gut{color:transparent;text-align:center;font-size:.75rem;user-select:none}
+.ln.dec{color:var(--muted)}
+.ln.end{color:var(--muted);font-style:italic}
+.ln.cs{background:var(--cs-bg);box-shadow:inset 3px 0 0 var(--cs-line)}
+.ln.cs::after{content:"КС";position:sticky;right:8px;margin-left:auto;font-family:var(--font-ui);font-size:.68rem;font-weight:700;letter-spacing:.06em;color:var(--cs);padding-left:12px}
+.ln.cs{grid-template-columns:2.1em max-content 1fr}
+.ln.cs::after{justify-self:end}
+.ln.cur{background:var(--tt);box-shadow:inset 4px 0 0 var(--tc);font-weight:600;cursor:pointer}
+.ln.cur.cs{background:linear-gradient(90deg,var(--tt),var(--cs-bg))}
+.ln.cur .gut{color:var(--tc)}
+.ln.cur.idle{cursor:default}
+.ln .cm{color:var(--muted);font-weight:400}
+.th-foot{display:flex;flex-wrap:wrap;gap:10px;align-items:center;justify-content:space-between;padding:10px 12px;border-top:1px solid var(--line);margin-top:auto}
+.locals{display:flex;flex-wrap:wrap;gap:6px 14px;font-family:var(--font-code);font-size:.9rem;min-width:0}
+.locals .none{color:var(--muted);font-family:var(--font-ui);font-size:.85rem}
+.stepbtn{border-color:var(--tc);color:var(--tc);font-weight:600}
+
+/* state panel */
+.panel{background:var(--surface);border:1px solid var(--line);border-radius:8px;padding:12px 14px;min-width:0}
+.panel h3{margin:0 0 8px;font-size:.78rem;letter-spacing:.08em;text-transform:uppercase;color:var(--muted);font-weight:600}
+.vars{display:flex;flex-wrap:wrap;gap:8px}
+.var{display:flex;align-items:baseline;gap:8px;font-family:var(--font-code);font-size:1rem;padding:4px 10px;border:1px solid var(--line);border-radius:6px;background:var(--bg)}
+.var .k{color:var(--muted)}
+.var .v{font-weight:600;font-variant-numeric:tabular-nums}
+.locals .var{font-size:.9rem;padding:2px 8px}
+.var.chg{animation:chg 1.6s ease-out}
+@keyframes chg{0%,35%{background:var(--chg)}100%{background:var(--bg)}}
+
+.controls{display:flex;flex-wrap:wrap;gap:8px;align-items:center}
+.controls .count{margin-left:auto;color:var(--muted);font-size:.88rem;font-variant-numeric:tabular-nums}
+
+/* banners */
+.banner{border-radius:8px;padding:14px 16px;border:1px solid;display:flex;flex-direction:column;gap:8px}
+.banner.win{background:var(--ok-bg);border-color:var(--ok);color:var(--fg)}
+.banner.win .bt{color:var(--ok)}
+.banner.bad{background:var(--bad-bg);border-color:var(--bad)}
+.banner.bad .bt{color:var(--bad)}
+.banner.neutral{background:var(--info-bg);border-color:var(--line)}
+.banner .bt{font-weight:700;font-size:1.08rem;margin:0}
+.banner p{margin:0;max-width:72ch}
+.banner .row{display:flex;flex-wrap:wrap;gap:8px}
+.banner details summary{cursor:pointer;font-weight:600}
+.banner details p{margin-top:8px}
+.foot-note{font-size:.88rem;color:var(--muted);border-top:1px dashed var(--line);padding-top:8px}
+
+.below{display:grid;grid-template-columns:minmax(0,1fr) minmax(0,1.2fr);gap:14px}
+@media (max-width:1000px){.below{grid-template-columns:minmax(0,1fr)}}
+.viz{width:100%;max-width:720px;height:auto;display:block;margin:2px 0 6px}.viz .nd{fill:var(--surface);stroke:var(--fg);stroke-width:1.6}.viz .nd.gone{stroke:var(--muted);stroke-dasharray:5 4}.viz .nd.freed{fill:var(--bad-bg);stroke:var(--bad);stroke-dasharray:5 4}.viz .nd.new{stroke:var(--hl);stroke-width:3}.viz .nt{font-family:var(--font-code);font-size:15px;font-weight:600;fill:var(--fg);text-anchor:middle;dominant-baseline:central}.viz .nt.freed{fill:var(--bad);text-decoration:line-through}.viz .ft{font-family:var(--font-code);font-size:11px;fill:var(--bad);text-anchor:middle}.viz .ax{font-family:var(--font-ui);font-size:12px;fill:var(--muted)}.viz .e{fill:none;stroke:var(--muted);stroke-width:1.7}.viz .e.prev{stroke-dasharray:6 3}.viz .e.gone{stroke-dasharray:4 3;opacity:.55}.viz .e.chg{stroke:var(--hl);stroke-width:3.2;opacity:1}.viz .pl{font-family:var(--font-code);font-size:12.5px;font-weight:700;text-anchor:middle;paint-order:stroke;stroke:var(--surface);stroke-width:4px;stroke-linejoin:round}.viz .lk text{font-family:var(--font-code);font-size:11px;font-weight:700;fill:#fff;text-anchor:middle;dominant-baseline:central}.vcap{font-family:var(--font-ui);font-size:.8rem;color:var(--muted);white-space:normal;margin-bottom:6px}.vcap .hlt{color:var(--hl);font-weight:700}
+.view{font-family:var(--font-code);font-size:1rem;display:flex;flex-direction:column;gap:4px;overflow-x:auto;white-space:pre}
+.log{list-style:none;margin:0;padding:0;font-family:var(--font-code);font-size:.85rem;max-height:240px;overflow-y:auto;display:flex;flex-direction:column;gap:2px;counter-reset:s}
+.log li{display:grid;grid-template-columns:2.6em 2.4em minmax(0,1fr);gap:6px;align-items:baseline;counter-increment:s}
+.log li::before{content:counter(s);color:var(--muted);text-align:right;font-variant-numeric:tabular-nums}
+.log .who{font-weight:600}
+.log .who.t0{color:var(--t0)} .log .who.t1{color:var(--t1)} .log .who.t2{color:var(--t2)}
+.log .msg{overflow-wrap:anywhere}
+.log li.empty{display:block;counter-increment:none;color:var(--muted);font-family:var(--font-ui)}
+.log li.empty::before{content:none}
+@media (prefers-reduced-motion:reduce){.var.chg{animation:none;background:var(--chg)}}
+</style>
+
+<div class="app">
+  <aside class="rail">
+    <div class="brand">
+      <h1>Гонка потоков: блокировки</h1>
+      <p>Код из программ семинара: deadlock.c, philo.c, list.c, lru.c. Каждый ход — одна строка одного потока. Подберите порядок ходов, при котором код сломается.</p>
+    </div>
+    <ul class="levels" id="levels"></ul>
+    <div class="rail-foot">
+      <div><kbd>1</kbd> <kbd>2</kbd> <kbd>3</kbd> шаг потока T0 / T1 / T2</div>
+      <div><kbd>Backspace</kbd> отменить шаг</div>
+      <div><kbd>R</kbd> заново</div>
+      <div>Одна строка — один неделимый шаг. Все записи сразу видны другим потокам. Шаг потока, который ждёт мьютекс, ничего не меняет. «—» у мьютекса значит «свободен».</div>
+      <div><button class="linkbtn" id="themeBtn" type="button">Тема: как в системе</button></div>
+      <div><button class="linkbtn" id="resetProgress" type="button">Сбросить прогресс</button></div>
+    </div>
+  </aside>
+
+  <main>
+    <header class="lvl-head">
+      <div class="eyebrow" id="eyebrow"></div>
+      <h2 id="title"></h2>
+      <p class="goal" id="goal"></p>
+      <div class="hintrow">
+        <button class="btn" id="hintBtn" type="button">Подсказка</button>
+        <span class="hint" id="hint" hidden></span>
+      </div>
+    </header>
+
+    <div id="banner"></div>
+
+    <section class="threads" id="threads"></section>
+
+    <section class="panel" id="viewPanel" hidden>
+      <h3>Структура данных</h3>
+      <div class="view" id="view"></div>
+    </section>
+
+    <section class="panel">
+      <h3>Общие переменные</h3>
+      <div class="vars" id="shared"></div>
+    </section>
+
+    <div class="controls">
+      <button class="btn" id="undoBtn" type="button">Отменить шаг <kbd>⌫</kbd></button>
+      <button class="btn" id="resetBtn" type="button">Заново <kbd>R</kbd></button>
+      <span class="count" id="count"></span>
+    </div>
+
+    <section class="panel">
+      <h3>Журнал шагов</h3>
+      <ol class="log" id="log"></ol>
+    </section>
+  </main>
+</div>
+
+<script>
+/*ENGINE-START*/
+/* ===== Движок =====
+   Уровень — объект { id, title, goal, hint, win, breakable, shared, threads, check?, view?, winText, safeText, note? }.
+   threads[i] = { name, locals, code: [строки] }.
+   Строка: { t: текст, run?: (c) => строка-лог, l?: метка, cs?: true, end?: true }.
+   Строка без run — декоративная (на неё pc никогда не встаёт). end — «завершился».
+   В run доступен контекст c: c.sh (общие), c.t.loc (локальные), c.nx(), c.go(метка),
+   c.spin(условие), c.lock(имя, метка?), c.trylock(имя), c.unlock(имя, метка?).
+   Замок свободен, если его значение FREE (или его ещё нет среди общих переменных). */
+
+const FREE = '—';
+const X = (t, run, o) => Object.assign({ t, run }, o || {});   // исполняемая строка
+const D = (t) => ({ t });                                       // декоративная
+const END = (l) => ({ t: 'завершился', end: true, l });
+
+function nextExec(code, i) { for (let k = i + 1; k < code.length; k++) if (code[k].run || code[k].end) return k; throw new Error('нет следующей строки'); }
+function firstExec(code) { return nextExec(code, -1); }
+function labelIdx(code, l) { const k = code.findIndex(x => x.l === l); if (k < 0) throw new Error('нет метки ' + l); return k; }
+const clone = (o) => JSON.parse(JSON.stringify(o));
+
+function initState(level) {
+  return {
+    steps: 0,
+    sh: clone(level.shared),
+    th: level.threads.map(th => ({ pc: firstExec(th.code), loc: clone(th.locals || {}), st: 'run' }))
+  };
+}
+function canStep(t) { return t.st !== 'done'; }
+
+function step(level, S, me) {
+  const N = clone(S);
+  const t = N.th[me];
+  const code = level.threads[me].code;
+  const line = code[t.pc];
+  t.st = 'run';
+  const isFree = (name) => N.sh[name] === undefined || N.sh[name] === FREE;
+  const c = {
+    sh: N.sh, t, me, N,
+    nx() { t.pc = nextExec(code, t.pc); },
+    go(l) { t.pc = labelIdx(code, l); },
+    spin(cond) { if (cond) { t.st = 'spin'; return 'условие истинно — крутится'; } c.nx(); return 'условие ложно — дальше'; },
+    lock(name, after) {
+      if (isFree(name)) { N.sh[name] = 'T' + me; after ? c.go(after) : c.nx(); return 'взял ' + name; }
+      t.st = 'blocked'; return name + ' занят (' + N.sh[name] + '), ждёт';
+    },
+    trylock(name) { if (isFree(name)) { N.sh[name] = 'T' + me; return true; } return false; },
+    unlock(name, after) { N.sh[name] = FREE; after ? c.go(after) : c.nx(); return 'отпустил ' + name; }
+  };
+  const extra = line.run(c);
+  N.th.forEach((u, i) => { if (level.threads[i].code[u.pc].end) u.st = 'done'; });
+  N.steps++;
+  const text = line.t.replace(/\/\/.*$/, '').trim();
+  return { N, msg: extra ? text + '  ·  ' + extra : text };
+}
+
+/* «Ключ» состояния без косметики: spin / run / blocked — одно и то же, считается только завершение. */
+function key(S) {
+  return JSON.stringify([S.sh, S.th.map(t => [t.pc, t.loc, t.st === 'done' ? 'done' : 'r', !!t.uaf])]);
+}
+
+/* Исход: один из ключей OUTCOMES или null */
+function outcome(level, S) {
+  const th = S.th;
+  const inCS = th.filter((t, i) => t.st !== 'done' && level.threads[i].code[t.pc].cs).length;
+  if (inCS >= 2) return 'mutex';
+  if (level.check) { const r = level.check(S, level); if (r) return r; }
+  if (th.every(t => t.st === 'done')) return 'finished';
+  const k = key(S);
+  const moves = th.some((t, i) => canStep(t) && key(step(level, S, i).N) !== k);
+  if (moves) return null;
+  const alive = th.filter(t => t.st !== 'done').length;
+  if (alive === 1) return 'starve';
+  return 'deadlock';
+}
+
+/* ===== Вспомогательное для списка из list.c =====
+   Узлы называются по ключу: head (INT_MIN), 11, 13, 15, tail (INT_MAX).
+   Поля узла в общих переменных: «11.next», «11.lock». Освобождённые узлы — в «free()». */
+const KEYOF = n => n === 'head' ? -Infinity : n === 'tail' ? Infinity : n;
+const freed = (sh, n) => String(sh['free()']).split(', ').includes(String(n));
+function rdKey(c, n) { if (freed(c.sh, n)) c.t.uaf = true; return KEYOF(n); }
+function rdNext(c, n) { if (freed(c.sh, n)) { c.t.uaf = true; return 'мусор'; } return c.sh[n + '.next']; }
+function chain(sh, start) {
+  const out = [start]; let k = start;
+  for (let i = 0; i < 8; i++) { const n = sh[k + '.next']; if (n === undefined || n === FREE || n === 'мусор') break; out.push(n); k = n; }
+  return out;
+}
+const reach = (sh, x) => chain(sh, 'head').includes(x);
+function listView(S, extra) {
+  const lines = ['от head достижимо:  ' + chain(S.sh, 'head').join(' → ')];
+  (extra || []).forEach(x => { if (S.sh[x + '.next'] !== undefined && !reach(S.sh, x)) lines.push('узел ' + x + ' создан, но из head до него не дойти'); });
+  if (S.sh['free()'] !== FREE) lines.push('освобождены free(): ' + S.sh['free()']);
+  return lines;
+}
+const LIST0 = () => ({ 'head.next': 11, 'head.lock': FREE, '11.next': 13, '11.lock': FREE, '13.next': 15, '13.lock': FREE, '15.next': 'tail', '15.lock': FREE, 'tail.lock': FREE, 'free()': FREE });
+const allDone = S => S.th.every(t => t.st === 'done');
+const R = (S, i) => S.th[i].loc.r;
+
+/* Строки, общие для функций списка. p и q — имена локальных переменных. */
+const L_ = {
+  predHead: () => X('    node *pred = head;', c => { c.t.loc.pred = 'head'; c.nx(); return 'pred = head'; }),
+  currNext: (txt) => X(txt || '    node *curr = pred->next;', c => { c.t.loc.curr = rdNext(c, c.t.loc.pred); c.nx(); return 'curr = ' + c.t.loc.curr; }),
+  lockPred: (o) => X('    pthread_mutex_lock(&pred->lock);', c => c.lock(c.t.loc.pred + '.lock'), o),
+  lockCurr: (ind, after) => X(ind + 'pthread_mutex_lock(&curr->lock);', c => c.lock(c.t.loc.curr + '.lock', after)),
+  unlockPred: (ind, o, after) => X(ind + 'pthread_mutex_unlock(&pred->lock);', c => c.unlock(c.t.loc.pred + '.lock', after), o),
+  unlockCurr: (ind, o) => X(ind + 'pthread_mutex_unlock(&curr->lock);', c => c.unlock(c.t.loc.curr + '.lock'), o),
+  loop: (key) => X('    while (curr->key < key) {', c => {
+    if (rdKey(c, c.t.loc.curr) < key) { c.nx(); return 'да — дальше по списку'; }
+    c.go('after'); return 'нет — пришли'; }, { l: 'loop' }),
+  predCurr: () => X('        pred = curr;', c => { c.t.loc.pred = c.t.loc.curr; c.nx(); return 'pred = ' + c.t.loc.pred; }),
+  currAdv: (after) => X('        curr = curr->next;', c => { c.t.loc.curr = rdNext(c, c.t.loc.curr); after ? c.go(after) : c.nx(); return 'curr = ' + c.t.loc.curr; }),
+  rOne: () => X('        r = 1;', c => { c.t.loc.r = 1; c.nx(); })
+};
+
+/* hoh_find, встроенный в начало hoh_remove / hoh_add — как в list.c. */
+const hohFind = (key) => [
+  D('    // hoh_find(key, &pred, &curr):'),
+  L_.predHead(),
+  L_.lockPred(),
+  L_.currNext(),
+  L_.lockCurr('    '),
+  L_.loop(key),
+  L_.unlockPred('        '),
+  L_.predCurr(),
+  L_.currAdv(),
+  L_.lockCurr('        ', 'loop'),
+  D('    }'),
+  D('    // конец hoh_find: pred и curr захвачены'),
+];
+
+function hohRemove(i, key) {
+  return { name: 'hoh_remove(' + key + ')', locals: { pred: '?', curr: '?', r: 0 }, code: [
+    D('int hoh_remove(int key) {    // key = ' + key),
+    ...hohFind(key),
+    X('    if (curr->key == key) {', c => { if (rdKey(c, c.t.loc.curr) === key) { c.nx(); return 'нашли'; } c.go('unl'); return 'нет такого'; }, { l: 'after' }),
+    X('        pred->next = curr->next;', c => { const v = rdNext(c, c.t.loc.curr); c.sh[c.t.loc.pred + '.next'] = v; c.nx(); return c.t.loc.pred + '.next = ' + v; }),
+    L_.rOne(),
+    D('    }'),
+    L_.unlockCurr('    ', { l: 'unl' }),
+    L_.unlockPred('    '),
+    X('    if (r) free(curr);', c => { if (c.t.loc.r) { const f = c.sh['free()']; c.sh['free()'] = f === FREE ? String(c.t.loc.curr) : f + ', ' + c.t.loc.curr; } c.nx(); return c.t.loc.r ? 'узел ' + c.t.loc.curr + ' освобождён' : ''; }),
+    D('    return r;'),
+    D('}'),
+    END()
+  ] };
+}
+
+function hohAdd(i, key) {
+  return { name: 'hoh_add(' + key + ')', locals: { pred: '?', curr: '?', r: 0 }, code: [
+    D('int hoh_add(int key) {       // key = ' + key),
+    ...hohFind(key),
+    X('    if (curr->key != key) {', c => { if (rdKey(c, c.t.loc.curr) !== key) { c.nx(); return 'такого нет — вставляем'; } c.go('unl'); return 'уже есть'; }, { l: 'after' }),
+    X('        pred->next = new_node(key, curr);', c => { c.sh[key + '.next'] = c.t.loc.curr; c.sh[c.t.loc.pred + '.next'] = key; c.nx(); return key + '.next = ' + c.t.loc.curr + ', ' + c.t.loc.pred + '.next = ' + key; }),
+    L_.rOne(),
+    D('    }'),
+    L_.unlockCurr('    ', { l: 'unl' }),
+    L_.unlockPred('    '),
+    D('    return r;'),
+    D('}'),
+    END()
+  ] };
+}
+
+function bugRemove(i, key) {
+  return { name: 'bug_remove(' + key + ')', locals: { pred: '?', curr: '?', succ: '?', r: 0 }, code: [
+    D('int bug_remove(int key) {    // key = ' + key),
+    L_.predHead(),
+    L_.lockPred(),
+    L_.currNext(),
+    L_.loop(key),
+    L_.unlockPred('        '),
+    L_.lockCurr('        '),
+    L_.predCurr(),
+    L_.currAdv('loop'),
+    D('    }'),
+    X('    if (curr->key == key) {', c => { if (rdKey(c, c.t.loc.curr) === key) { c.nx(); return 'нашли'; } c.go('out'); return 'нет такого'; }, { l: 'after' }),
+    X('        node *succ = curr->next;  // curr не захвачен', c => { c.t.loc.succ = rdNext(c, c.t.loc.curr); c.nx(); return 'succ = ' + c.t.loc.succ; }),
+    X('        pred->next = succ;', c => { c.sh[c.t.loc.pred + '.next'] = c.t.loc.succ; c.nx(); return c.t.loc.pred + '.next = ' + c.t.loc.succ; }),
+    L_.rOne(),
+    D('    }'),
+    L_.unlockPred('    ', { l: 'out' }),
+    D('    return r;'),
+    D('}'),
+    END()
+  ] };
+}
+
+/* opt_find, встроенный в начало функции. validate — одним шагом. */
+const optFind = (key) => [
+  D('    // opt_find(key, &pred, &curr):'),
+  D('    for (;;) {'),
+  X('        node *pred = head, *curr = head->next;', c => { c.t.loc.pred = 'head'; c.t.loc.curr = rdNext(c, 'head'); c.nx(); return 'pred = head, curr = ' + c.t.loc.curr; }, { l: 'retry' }),
+  X('        while (curr->key < key)', c => { if (rdKey(c, c.t.loc.curr) < key) { c.nx(); return 'да — дальше'; } c.go('after'); return 'нет — пришли'; }, { l: 'loop' }),
+  X('            { pred = curr; curr = curr->next; }', c => { c.t.loc.pred = c.t.loc.curr; c.t.loc.curr = rdNext(c, c.t.loc.curr); c.go('loop'); return 'pred = ' + c.t.loc.pred + ', curr = ' + c.t.loc.curr; }),
+  X('        pthread_mutex_lock(&pred->lock);', c => c.lock(c.t.loc.pred + '.lock'), { l: 'after' }),
+  X('        pthread_mutex_lock(&curr->lock);', c => c.lock(c.t.loc.curr + '.lock')),
+  X('        if (validate(pred, curr)) break;', c => {
+    const ok = reach(c.sh, c.t.loc.pred) && c.sh[c.t.loc.pred + '.next'] === c.t.loc.curr;
+    if (ok) { c.go('found'); return 'проверка прошла'; } c.nx(); return 'список изменился — заново'; }),
+  X('        pthread_mutex_unlock(&curr->lock);', c => c.unlock(c.t.loc.curr + '.lock')),
+  X('        pthread_mutex_unlock(&pred->lock);', c => c.unlock(c.t.loc.pred + '.lock', 'retry')),
+  D('    }'),
+];
+
+/* ===== Вспомогательное для LRU из lru.c ===== */
+function lruView(sh) {
+  const f = ['head'], b = ['head'];
+  let k = 'head'; for (let i = 0; i < 5; i++) { k = sh[k + '.next']; f.push(k); if (k === 'head') break; }
+  k = 'head'; for (let i = 0; i < 5; i++) { k = sh[k + '.prev']; b.push(k); if (k === 'head') break; }
+  return ['по next:  ' + f.join(' → '), 'по prev:  ' + b.join(' → ')];
+}
+function lruOk(sh) {
+  const seen = new Set(); let k = 'head';
+  for (let i = 0; i < 3; i++) { k = sh[k + '.next']; if (k === 'head' || seen.has(k)) return false; seen.add(k); }
+  if (sh[k + '.next'] !== 'head') return false;
+  return ['head', 'A', 'B', 'C'].every(n => sh[sh[n + '.next'] + '.prev'] === n);
+}
+function lruGet(i, e, guard) {
+  const [lk, ul] = guard === 'rw'
+    ? [X('pthread_rwlock_rdlock(&one.rwlock);  // ОШИБКА', c => { c.sh['читателей rwlock']++; c.nx(); return 'вошёл, читателей: ' + c.sh['читателей rwlock']; }),
+       X('pthread_rwlock_unlock(&one.rwlock);', c => { c.sh['читателей rwlock']--; c.nx(); })]
+    : [X('pthread_mutex_lock(&one.mutex);', c => c.lock('one.mutex')), X('pthread_mutex_unlock(&one.mutex);', c => c.unlock('one.mutex'))];
+  const set = (f, val, txt) => X(txt, c => { const [obj, fld] = f(c.sh); const v = val(c.sh); c.sh[obj + '.' + fld] = v; c.nx(); return obj + '.' + fld + ' = ' + v; });
+  return { name: (guard === 'rw' ? 'get_rw(' : 'get_mutex(') + e + ')', locals: {}, code: [
+    D('// get_' + (guard === 'rw' ? 'rw' : 'mutex') + '(' + e + '); e = ' + e),
+    lk,
+    D('// lru_get → list_remove(e):'),
+    set(sh => [sh[e + '.prev'], 'next'], sh => sh[e + '.next'], '  e->prev->next = e->next;'),
+    set(sh => [sh[e + '.next'], 'prev'], sh => sh[e + '.prev'], '  e->next->prev = e->prev;'),
+    D('// lru_get → list_push_front(c, e):'),
+    set(() => [e, 'next'], sh => sh['head.next'], '  e->next = c->head.next;'),
+    set(() => [e, 'prev'], () => 'head', '  e->prev = &c->head;'),
+    set(sh => [sh['head.next'], 'prev'], () => e, '  c->head.next->prev = e;'),
+    set(() => ['head', 'next'], () => e, '  c->head.next = e;'),
+    ul,
+    END()
+  ] };
+}
+const LRU0 = { 'head.next': 'A', 'A.prev': 'head', 'A.next': 'B', 'B.prev': 'A', 'B.next': 'C', 'C.prev': 'B', 'C.next': 'head', 'head.prev': 'C' };
+
+/* ===== Вспомогательное для deadlock.c и philo.c ===== */
+const FK = (i) => 'forks[' + i + ']';
+const LK = (n, after) => X('pthread_mutex_lock(&' + n + ');', c => c.lock(n, after));
+const UL = (n, after) => X('pthread_mutex_unlock(&' + n + ');', c => c.unlock(n, after));
+const ABmoves = (from, to) => X(from + '--; ' + to + '++;', c => { c.sh[from]--; c.sh[to]++; c.nx(); return from + ' = ' + c.sh[from] + ', ' + to + ' = ' + c.sh[to]; });
+function philoThreads(n, body) {
+  return Array.from({ length: n }, (_, i) => ({ name: 'Философ ' + i, locals: body.locals || {}, code: body(i, i, (i + 1) % n) }));
+}
+const eat = (o) => X('eat();', c => { c.sh['обедов']++; c.nx(); return 'поел'; }, o);
+
+/* ===== Рисунок структуры данных (SVG) ===== */
+const TC = ['var(--t0)', 'var(--t1)', 'var(--t2)'];
+const SLOT = { head: 0, 11: 1, 12: 1.5, 13: 2, 15: 3, tail: 4 };
+const svgDefs = '<defs>' +
+  '<marker id="ah" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" style="fill:var(--muted)"/></marker>' +
+  '<marker id="ahh" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" style="fill:var(--hl)"/></marker>' +
+  '</defs>';
+const lockOwner = v => (typeof v === 'string' && /^T\d$/.test(v)) ? +v[1] : -1;
+function lockBadge(x, y, owner) {
+  if (owner < 0) return '';
+  return `<g class="lk"><rect x="${x - 15}" y="${y - 9}" width="30" height="18" rx="9" style="fill:${TC[owner]}"/><text x="${x}" y="${y}">T${owner}</text></g>`;
+}
+
+function drawList(S, P, tall) {
+  const sh = S.sh, ps = P ? P.sh : null;
+  const W = 112, BW = 60, BH = 36, X0 = 24, Y1 = 66, Y2 = 206;
+  const ids = ['head'];
+  Object.keys(sh).forEach(k => { const m = /^(.+)\.next$/.exec(k); if (m && m[1] !== 'head' && m[1] !== 'tail' && !ids.includes(m[1])) ids.push(m[1]); });
+  ids.push('tail');
+  ids.sort((a, b) => SLOT[a] - SLOT[b]);
+  const pos = id => ({ x: X0 + SLOT[id] * W, y: SLOT[id] % 1 ? Y2 : Y1 });
+  const live = new Set(chain(sh, 'head').map(String));
+  const isFreed = id => freed(sh, id);
+  let edges = '', nodes = '', labels = '';
+  ids.forEach(id => {
+    if (id === 'tail') return;
+    const t = sh[id + '.next'];
+    if (t === undefined || t === FREE || t === 'мусор') return;
+    const ts = String(t), a = pos(id), b = pos(ts);
+    const chg = ps && ps[id + '.next'] !== t;
+    let d;
+    if (a.y === b.y && SLOT[ts] - SLOT[id] > 1) {            // ссылка «через голову» — дугой сверху
+      const h = 26 + 14 * (SLOT[ts] - SLOT[id]);
+      d = `M${a.x + BW / 2 + 8},${a.y} C${a.x + BW / 2 + 8},${a.y - h} ${b.x + BW / 2 - 8},${b.y - h} ${b.x + BW / 2 - 8},${b.y - 1}`;
+    } else if (a.y < b.y) {                                   // вниз, к вставленному узлу
+      d = `M${a.x + BW / 2 + 10},${a.y + BH} L${b.x},${b.y + BH / 2}`;
+    } else if (a.y > b.y) {                                   // вверх, обратно в основной ряд
+      d = `M${a.x + BW},${a.y + BH / 2} L${b.x + BW / 2 - 10},${b.y + BH + 1}`;
+    } else {
+      d = `M${a.x + BW},${a.y + BH / 2} L${b.x - 1},${b.y + BH / 2}`;
+    }
+    const gone = !live.has(id);
+    edges += `<path class="e${gone ? ' gone' : ''}${chg ? ' chg' : ''}" d="${d}" marker-end="url(#${chg ? 'ahh' : 'ah'})"/>`;
+  });
+  ids.forEach(id => {
+    const { x, y } = pos(id);
+    const fr = isFreed(id), gone = !live.has(id), isNew = ps && ps[id + '.next'] === undefined && id !== 'head' && id !== 'tail';
+    const cls = 'nd' + (fr ? ' freed' : gone ? ' gone' : '') + (isNew ? ' new' : '');
+    const label = id === 'head' ? 'head' : id === 'tail' ? 'tail' : id;
+    nodes += `<rect class="${cls}" x="${x}" y="${y}" width="${BW}" height="${BH}" rx="6"/>` +
+      `<text class="nt${fr ? ' freed' : ''}" x="${x + BW / 2}" y="${y + BH / 2}">${label}</text>` +
+      (fr ? `<text class="ft" x="${x + BW / 2}" y="${y - 8}">free()</text>` : '') +
+      lockBadge(x + BW - 2, y, lockOwner(sh[id + '.lock']));
+    // локальные указатели потоков
+    const tags = [];
+    S.th.forEach((t, i) => {
+      if (t.st === 'done') return;
+      ['pred', 'curr', 'succ'].forEach(v => { if (String(t.loc[v]) === id) tags.push([i, v]); });
+    });
+    tags.forEach(([i, v], k) => {
+      labels += `<text class="pl" x="${x + BW / 2}" y="${y + BH + 16 + k * 15}" style="fill:${TC[i]}">▲ T${i} ${v}</text>`;
+    });
+  });
+  const width = X0 * 2 + 4 * W + BW, height = tall ? Y2 + BH + 54 : Y1 + BH + 64;
+  return `<svg class="viz" viewBox="0 0 ${width} ${height}" role="img" aria-label="Список">${svgDefs}${edges}${nodes}${labels}</svg>` +
+    '<div class="vcap">▲ T0 curr — куда указывает локальная переменная потока · метка T0 на узле — кто держит его lock · <span class="hlt">выделено</span> — что изменилось на последнем шаге · пунктир — узел убран из списка</div>';
+}
+
+function drawLru(S, P) {
+  const sh = S.sh, ps = P ? P.sh : null;
+  const ids = ['head', 'A', 'B', 'C'], W = 130, BW = 64, BH = 36, X0 = 30, Y = 96;
+  const px = id => X0 + ids.indexOf(id) * W;
+  let edges = '';
+  ids.forEach(id => {
+    ['next', 'prev'].forEach(f => {
+      const t = sh[id + '.' + f]; if (!ids.includes(t)) return;
+      const chg = ps && ps[id + '.' + f] !== t;
+      const up = f === 'next', dist = Math.abs(ids.indexOf(t) - ids.indexOf(id)) || 1;
+      const x1 = px(id) + BW / 2 + (up ? 8 : -8), x2 = px(t) + BW / 2 + (up ? -8 : 8);
+      const y1 = up ? Y : Y + BH, h = (up ? -1 : 1) * (18 + 16 * dist);
+      edges += `<path class="e ${f}${chg ? ' chg' : ''}" d="M${x1},${y1} C${x1},${y1 + h} ${x2},${y1 + h} ${x2},${y1 + (up ? -1 : 1)}" marker-end="url(#${chg ? 'ahh' : 'ah'})"/>`;
+    });
+  });
+  const onNext = new Set(['head']); { let k = 'head'; for (let i = 0; i < 5; i++) { k = sh[k + '.next']; if (!ids.includes(k) || onNext.has(k)) break; onNext.add(k); } }
+  let nodes = '';
+  ids.forEach(id => {
+    nodes += `<rect class="nd${onNext.has(id) ? '' : ' gone'}" x="${px(id)}" y="${Y}" width="${BW}" height="${BH}" rx="6"/><text class="nt" x="${px(id) + BW / 2}" y="${Y + BH / 2}">${id}</text>`;
+  });
+  const width = X0 * 2 + 3 * W + BW, height = Y * 2 + BH;
+  return `<svg class="viz" viewBox="0 0 ${width} ${height}" role="img" aria-label="Двусвязный список">${svgDefs}` +
+    `<text class="ax" x="6" y="18">next ↷</text><text class="ax" x="6" y="${height - 8}">prev ↶</text>${edges}${nodes}</svg>` +
+    '<div class="vcap">сверху — ссылки next, снизу — ссылки prev · <span class="hlt">выделено</span> — что изменилось на последнем шаге · пунктирный узел — по next от head до него не дойти</div>';
+}
+
+/* ===== Уровни ===== */
+const LEVELS = [
+{
+  id: 'ab-ba', title: 'deadlock.c: разный порядок',
+  goal: 'Добейтесь, чтобы оба потока зависли навсегда.',
+  hint: 'Дайте каждому потоку захватить свой первый мьютекс, прежде чем кто-то возьмёт второй.',
+  win: 'deadlock', breakable: true,
+  shared: { A: FREE, B: FREE, a: 0, b: 0 },
+  threads: [
+    { name: 'transfer_ab', locals: {}, code: [LK('A'), LK('B'), ABmoves('a', 'b'), UL('B'), UL('A'), END()] },
+    { name: 'transfer_ba_bad', locals: {}, code: [LK('B'), LK('A'), ABmoves('b', 'a'), UL('A'), UL('B'), END()] }
+  ],
+  winText: 'transfer_ab держит A и ждёт B, transfer_ba_bad держит B и ждёт A. Выполнены все четыре условия Коффмана: взаимное исключение, удержание с ожиданием, отсутствие вытеснения и циклическое ожидание. Именно эту картину показывает gdb на зависшем ./deadlock bad: transfer_ab стоит во втором pthread_mutex_lock на B, transfer_ba_bad — на A. Лекарство — сломать цикл: все берут мьютексы в одном порядке.'
+},
+{
+  id: 'ab-ab', title: 'deadlock.c: один порядок',
+  goal: 'Попробуйте снова устроить взаимную блокировку.',
+  hint: 'Пробуйте любые порядки. Когда оба потока завершатся, откроется объяснение.',
+  win: null, breakable: false,
+  shared: { A: FREE, B: FREE, a: 0, b: 0 },
+  threads: [
+    { name: 'transfer_ab', locals: {}, code: [LK('A'), LK('B'), ABmoves('a', 'b'), UL('B'), UL('A'), END()] },
+    { name: 'transfer_ba_good', locals: {}, code: [LK('A'), LK('B'), ABmoves('b', 'a'), UL('B'), UL('A'), END()] }
+  ],
+  safeText: 'Кто первым захватил A, тот и пройдёт дальше: второй поток ждёт A, ничего не удерживая, поэтому B всегда достанется владельцу A. Для цикла кто-то должен держать B и ждать A, а B берут только после A. Это правило «все захватывают в одном порядке» — им же лечатся философы и переводы между счетами в ЛР2.'
+},
+{
+  id: 'philo-deadlock', title: 'philo.c: deadlock',
+  goal: 'Добейтесь, чтобы все три философа зависли с одной вилкой в руке.',
+  hint: 'Пусть каждый философ возьмёт свою левую вилку, прежде чем кто-то потянется к правой.',
+  win: 'deadlock', breakable: true,
+  shared: { 'forks[0]': FREE, 'forks[1]': FREE, 'forks[2]': FREE, 'обедов': 0 },
+  threads: philoThreads(3, (i, L, R) => [
+    D('// philo_deadlock: left = ' + L + ', right = ' + R),
+    LK(FK(L)), LK(FK(R)), eat(), UL(FK(R)), UL(FK(L)), END()
+  ]),
+  winText: 'Философ 0 держит forks[0] и ждёт forks[1], философ 1 держит forks[1] и ждёт forks[2], философ 2 держит forks[2] и ждёт forks[0]. Это тот же цикл, что в deadlock.c, только из трёх звеньев. Замыкает его последний философ: у него left = 2, right = 0, то есть он единственный берёт вилки от большего номера к меньшему.'
+},
+{
+  id: 'philo-livelock', title: 'philo.c: livelock',
+  goal: 'Добейтесь, чтобы все трое попробовали поесть, ни один не поел, и все вернулись в начало цикла со свободными вилками.',
+  hint: 'Сначала все берут левую вилку. Потом все пробуют правую. Потом все кладут левую.',
+  win: 'livelock', breakable: true,
+  shared: { 'forks[0]': FREE, 'forks[1]': FREE, 'forks[2]': FREE, 'обедов': 0 },
+  threads: philoThreads(3, Object.assign((i, L, R) => [
+    D('// philo_livelock: left = ' + L + ', right = ' + R),
+    D('while (1) {'),
+    X('  pthread_mutex_lock(&' + FK(L) + ');', c => c.lock(FK(L)), { l: 'top' }),
+    X('  if (pthread_mutex_trylock(&' + FK(R) + ') == 0) break;', c => {
+      if (c.trylock(FK(R))) { c.go('eat'); return 'взял правую — идёт есть'; }
+      c.t.loc['неудач']++; c.nx(); return 'правая занята';
+    }),
+    X('  pthread_mutex_unlock(&' + FK(L) + ');  // уступаем', c => c.unlock(FK(L), 'top')),
+    D('}'),
+    eat({ l: 'eat' }), UL(FK(R)), UL(FK(L)), END()
+  ], { locals: { 'неудач': 0 } })),
+  check: (S, lv) => (S.sh['обедов'] === 0 &&
+    S.th.every((t, i) => t.st !== 'done' && t.loc['неудач'] >= 1 && lv.threads[i].code[t.pc].l === 'top') &&
+    [0, 1, 2].every(k => S.sh[FK(k)] === FREE)) ? 'livelock' : null,
+  winText: 'Все снова в начале, вилки свободны, никто не поел — и ничто не мешает повторить тот же круг ещё раз, и ещё. Взаимной блокировки нет: потоки не спят, а работают, процессор занят на 100%. Но прогресса тоже нет. Это livelock. Условие «удержание и ожидание» сломано (trylock не ждёт с вилкой в руке), а гарантии прогресса это не дало. В philo.c такой ритм задают барьеры, в жизни он складывается сам — редко, и потому особенно неприятно. Случайная пауза перед новой попыткой делает его маловероятным, но не невозможным.'
+},
+{
+  id: 'philo-order', title: 'philo.c: порядок',
+  goal: 'Попробуйте снова заблокировать философов.',
+  hint: 'Пробуйте любые порядки. Посмотрите, к какой вилке первым тянется философ 2.',
+  win: null, breakable: false,
+  shared: { 'forks[0]': FREE, 'forks[1]': FREE, 'forks[2]': FREE, 'обедов': 0 },
+  threads: philoThreads(3, (i, L, R) => {
+    const a = Math.min(L, R), b = Math.max(L, R);
+    return [D('// philo_order: first = ' + a + ', second = ' + b), LK(FK(a)), LK(FK(b)), eat(), UL(FK(b)), UL(FK(a)), END()];
+  }),
+  safeText: 'Философ 2 теперь берёт сначала forks[0], как и философ 0. Кто из них проиграл, тот ждёт, ничего не удерживая. Для цикла каждый в нём должен держать вилку и ждать вилку с бо́льшим номером, но тогда номера вдоль цикла строго растут и не могут вернуться к началу. Значит, цикла нет, а тот, кто держит вилку с самым большим номером, всегда может поесть.'
+},
+{
+  id: 'list-resurrect', title: 'list.c: hohbug, два удаления',
+  goal: 'Добейтесь, чтобы оба bug_remove вернули 1, а 13 остался в списке.',
+  hint: 'Пусть поток 1 первым пройдёт мимо head. Затем поток 0 доходит до succ = curr->next — и только после этого поток 1 перекидывает 11.next.',
+  win: 'resurrect', breakable: true,
+  shared: LIST0(),
+  view: S => listView(S), draw: drawList,
+  threads: [bugRemove(0, 11), bugRemove(1, 13)],
+  check: S => S.th.some(t => t.uaf) ? 'uaf' : (allDone(S) && R(S, 0) === 1 && R(S, 1) === 1 && reach(S.sh, 13)) ? 'resurrect' : null,
+  winText: 'Поток 0 держал только pred = head. Узел 11 он не захватил и прочитал 11.next = 13 в тот момент, когда поток 1 (державший 11 как свой pred) как раз удалял 13. Поток 1 записал 11.next = 15, а поток 0 следом записал head.next = 13 — удалённый узел воскрес. Именно это ловит ./list hohbug: «в списке ключей больше, чем должно быть». TSan молчит: поле next атомарное, гонки данных нет, есть только логическая гонка. Удаляющий читает curr->next, поэтому должен держать и curr.'
+},
+{
+  id: 'list-lost-insert', title: 'list.c: hohbug, удаление и вставка',
+  goal: 'Добейтесь, чтобы hoh_add(12) вернул 1, а 12 в списке не оказалось.',
+  hint: 'Пусть поток 1 первым пройдёт мимо head. Потом поток 0 читает succ = curr->next, а уже после этого поток 1 вставляет 12.',
+  win: 'lostins', breakable: true,
+  shared: LIST0(),
+  view: S => listView(S, [12]), draw: (S, P) => drawList(S, P, true),
+  threads: [bugRemove(0, 11), hohAdd(1, 12)],
+  check: S => S.th.some(t => t.uaf) ? 'uaf' : (allDone(S) && R(S, 1) === 1 && !reach(S.sh, 12)) ? 'lostins' : null,
+  winText: 'Поток 1 прошёл мимо head раньше, чем поток 0 её захватил, и работал впереди, на паре 11 → 13. Замок head его не остановил: замок на pred защищает только от тех, кто идёт сзади. Поток 0 прочитал 11.next = 13, поток 1 вставил 12 после 11, а потом поток 0 записал head.next = 13 — и 12 оказался висящим на удалённом узле. Это контрпример из лекции. В hoh_remove такого нет: hoh_find возвращает и curr захваченным, и удаляющий дождётся, пока поток 1 отпустит 11.'
+},
+{
+  id: 'list-hoh', title: 'list.c: hoh, удаление и вставка',
+  goal: 'Попробуйте снова потерять вставку 12 или прочитать освобождённый узел.',
+  hint: 'Пробуйте любые порядки. Посмотрите, на какой строке поток 0 будет ждать.',
+  win: null, breakable: false,
+  shared: LIST0(),
+  view: S => listView(S, [12]), draw: (S, P) => drawList(S, P, true),
+  threads: [hohRemove(0, 11), hohAdd(1, 12)],
+  check: S => S.th.some(t => t.uaf) ? 'uaf' : (allDone(S) && R(S, 1) === 1 && !reach(S.sh, 12)) ? 'lostins' : null,
+  safeText: 'Если поток 1 впереди и держит 11 как свой pred, поток 0 упрётся в pthread_mutex_lock(&curr->lock) и дождётся конца вставки — тогда он прочитает 11.next = 12. Если поток 0 впереди, поток 1 упрётся в head или 11 и после удаления пойдёт уже по новому списку. И free(curr) безопасен: дойти до узла можно, только держа его предшественника, а предшественника держал удаляющий. Замок на pred не пускает тех, кто идёт сзади, замок на curr заставляет дождаться тех, кто уже впереди.'
+},
+{
+  id: 'list-opt-free', title: 'list.c: opt и free',
+  goal: 'В opt_remove добавили free(curr). Заставьте поток 0 прочитать освобождённый узел.',
+  hint: 'Пусть поток 0 прочитает curr = head->next, а потом поток 1 целиком выполнит opt_remove(11).',
+  win: 'uaf', breakable: true,
+  shared: LIST0(),
+  view: S => listView(S), draw: drawList,
+  threads: [
+    { name: 'opt_contains(13)', locals: { pred: '?', curr: '?', r: '?' }, code: [
+      D('int opt_contains(int key) {   // key = 13'),
+      ...optFind(13),
+      X('    int r = curr->key == key;', c => { c.t.loc.r = rdKey(c, c.t.loc.curr) === 13 ? 1 : 0; c.nx(); return 'r = ' + c.t.loc.r; }, { l: 'found' }),
+      X('    pthread_mutex_unlock(&curr->lock);', c => c.unlock(c.t.loc.curr + '.lock')),
+      X('    pthread_mutex_unlock(&pred->lock);', c => c.unlock(c.t.loc.pred + '.lock')),
+      D('    return r;'),
+      D('}'),
+      END()
+    ] },
+    { name: 'opt_remove(11) + free', locals: { pred: '?', curr: '?', r: 0 }, code: [
+      D('int opt_remove(int key) {     // key = 11'),
+      ...optFind(11),
+      X('    if (curr->key == key) {', c => { if (rdKey(c, c.t.loc.curr) === 11) { c.nx(); return 'нашли'; } c.go('unl'); return 'нет такого'; }, { l: 'found' }),
+      X('        pred->next = curr->next;', c => { const v = rdNext(c, c.t.loc.curr); c.sh[c.t.loc.pred + '.next'] = v; c.nx(); return c.t.loc.pred + '.next = ' + v; }),
+      L_.rOne(),
+      D('    }'),
+      L_.unlockCurr('    ', { l: 'unl' }),
+      L_.unlockPred('    '),
+      X('    if (r) free(curr);   // ДОБАВИЛИ — можно ли?', c => { if (c.t.loc.r) c.sh['free()'] = String(c.t.loc.curr); c.nx(); return c.t.loc.r ? 'узел ' + c.t.loc.curr + ' освобождён' : ''; }),
+      D('    return r;'),
+      D('}'),
+      END()
+    ] }
+  ],
+  check: S => S.th.some(t => t.uaf) ? 'uaf' : null,
+  winText: 'Поток 1 всё сделал по правилам: нашёл, захватил оба узла, проверил, удалил, отпустил, освободил. Но поток 0 идёт по списку без замков и уже стоял на узле 11 — и теперь читает curr->key освобождённого узла. В hand-over-hand такое невозможно: к узлу нельзя прийти, не держа его предшественника. В оптимистичном списке можно, поэтому opt_remove в list.c не вызывает free, и удалённые узлы просто утекают. Как безопасно освобождать память в таких структурах (hazard pointers, epoch reclamation) — отдельная тема; с ней же связана проблема ABA в lock-free стеке.'
+},
+{
+  id: 'lru-rw', title: 'lru.c: rwbug',
+  goal: 'Испортите список: добейтесь, чтобы ссылки next и prev разошлись.',
+  hint: 'rdlock пустит обоих. Начните оба list_remove почти одновременно: B и C — соседи.',
+  win: 'corrupt', breakable: true,
+  shared: Object.assign({ 'читателей rwlock': 0 }, LRU0),
+  view: S => lruView(S.sh), draw: drawLru,
+  threads: [lruGet(0, 'B', 'rw'), lruGet(1, 'C', 'rw')],
+  check: S => (allDone(S) && !lruOk(S.sh)) ? 'corrupt' : null,
+  winText: 'rdlock пустил обоих: get ведь «только читает». Но lru_get переносит найденный элемент в голову списка, то есть пишет шесть указателей, и два потока сделали это вперемешку. Это ловушка из семинара: прежде чем ставить rwlock, проверьте, что «чтение» действительно ничего не меняет. ./lru rwbug работает быстрее мьютекса — и портит список, а TSan сообщает о десятках гонок.'
+},
+{
+  id: 'lru-mutex', title: 'lru.c: mutex',
+  goal: 'Попробуйте снова испортить список.',
+  hint: 'Пробуйте любые порядки. Когда оба потока завершатся, откроется объяснение.',
+  win: null, breakable: false,
+  shared: Object.assign({ 'one.mutex': FREE }, LRU0),
+  view: S => lruView(S.sh), draw: drawLru,
+  threads: [lruGet(0, 'B', 'mutex'), lruGet(1, 'C', 'mutex')],
+  check: S => (allDone(S) && !lruOk(S.sh)) ? 'corrupt' : null,
+  safeText: 'Мьютекс выстраивает два get в очередь: перестановка элементов выполняется целиком одним потоком, затем целиком другим. Плата — все get идут строго по одному. Ускорить можно шардированием (./lru sharded): несколько независимых кэшей, ключ выбирает свой. Но тогда LRU становится приблизительным: вытесняется самый старый элемент в шарде, а не во всём кэше.'
+}
+];
+
+const OUTCOMES = {
+  mutex:     { title: 'Оба потока в критической секции — взаимное исключение нарушено!', kind: 'bad' },
+  deadlock:  { title: 'Взаимная блокировка: ни один поток не может продвинуться.', kind: 'bad' },
+  livelock:  { title: 'Livelock: все попробовали, все уступили, все снова в начале — и так без конца.', kind: 'bad' },
+  starve:    { title: 'Нарушен прогресс: поток ждёт вечно, а пустить его уже некому.', kind: 'bad' },
+  double:    { title: 'Оба remove(11) вернули 1 — один элемент удалён дважды.', kind: 'bad' },
+  lostins:   { title: 'hoh_add(12) вернул 1, но из head до 12 не дойти — вставка потеряна.', kind: 'bad' },
+  resurrect: { title: 'Оба bug_remove вернули 1, но 13 снова в списке — удалённый узел воскрес.', kind: 'bad' },
+  uaf:       { title: 'Поток прочитал поле освобождённого узла — use-after-free.', kind: 'bad' },
+  corrupt:   { title: 'Список испорчен: ссылки next и prev больше не согласованы.', kind: 'bad' },
+  finished:  { title: 'Все потоки завершились, ничего не сломалось.', kind: 'neutral' }
+};
+const SAFE_STEPS = 40;
+/*ENGINE-END*/
+
+if (typeof module !== 'undefined') { module.exports = { LEVELS, initState, step, outcome, key, canStep, SAFE_STEPS, OUTCOMES }; }
+else {
+/* ===== Интерфейс ===== */
+const $ = (id) => document.getElementById(id);
+const STORE = 'evil-scheduler-locks-v2';
+let saved = { done: {}, cur: 0 };
+try { const s = JSON.parse(localStorage.getItem(STORE) || 'null'); if (s && s.done) saved = { done: s.done, cur: s.cur | 0 }; } catch (e) {}
+function persist() { try { localStorage.setItem(STORE, JSON.stringify(saved)); } catch (e) {} }
+
+let L, hist, logs;
+const STATUS = { run: 'выполняется', spin: 'крутится в цикле', sleep: 'спит', blocked: 'ждёт мьютекс', cs: 'в критической секции', done: 'завершён' };
+
+function load(i) {
+  saved.cur = Math.max(0, Math.min(LEVELS.length - 1, i)); persist();
+  L = LEVELS[saved.cur]; hist = [initState(L)]; logs = [];
+  $('hint').hidden = true; $('hintBtn').textContent = 'Подсказка';
+  renderStatic(); render();
+}
+function cur() { return hist[hist.length - 1]; }
+function finishedOutcome(S) { return outcome(L, S); }
+
+function doStep(i) {
+  const S = cur(); const o = finishedOutcome(S);
+  if (o && o !== 'finished' && OUTCOMES[o].kind === 'bad') return;
+  if (!canStep(S.th[i])) return;
+  const r = step(L, S, i);
+  hist.push(r.N); logs.push({ who: i, msg: r.msg });
+  render(true);
+}
+function undo() { if (hist.length > 1) { hist.pop(); logs.pop(); render(false); } }
+function reset() { hist = [initState(L)]; logs = []; render(false); }
+
+function esc(s) { return String(s).replace(/[&<>"]/g, ch => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[ch])); }
+function fmtCode(t) { const k = t.indexOf('//'); return k < 0 ? esc(t) : esc(t.slice(0, k)) + '<span class="cm">' + esc(t.slice(k)) + '</span>'; }
+function fmtVal(v) { return typeof v === 'number' ? String(v) : String(v); }
+
+function renderStatic() {
+  $('levels').innerHTML = LEVELS.map((lv, i) =>
+    `<li><button type="button" data-i="${i}" aria-current="${i === saved.cur}"><span class="num">${String(i + 1).padStart(2, '0')}</span><span class="lname">${esc(lv.title)}</span><span class="mark ${saved.done[lv.id] ? '' : (lv.breakable ? '' : 'lock')}">${saved.done[lv.id] ? '✓' : ''}</span></button></li>`).join('');
+  $('eyebrow').textContent = 'Уровень ' + (saved.cur + 1) + ' из ' + LEVELS.length + (L.breakable ? '' : ' · этот код, возможно, не сломать');
+  $('title').textContent = L.title;
+  $('goal').textContent = L.goal;
+  $('hint').textContent = L.hint;
+  $('threads').innerHTML = L.threads.map((th, i) => `
+    <article class="thread" data-t="${i}">
+      <div class="th-head"><span class="th-name">${esc(th.name)} · T${i}</span><span class="badge" id="badge${i}"></span></div>
+      <div class="code" id="code${i}">${th.code.map((ln, k) =>
+        `<div class="ln${ln.run ? '' : (ln.end ? ' end' : ' dec')}${ln.cs ? ' cs' : ''}" data-k="${k}"><span class="gut">▶</span><span>${ln.end ? '// завершился' : fmtCode(ln.t)}</span></div>`).join('')}</div>
+      <div class="th-foot"><div class="locals" id="loc${i}"></div>
+        <button class="btn stepbtn" type="button" id="step${i}">Шаг <kbd>${i + 1}</kbd></button></div>
+    </article>`).join('');
+  L.threads.forEach((_, i) => {
+    $('step' + i).onclick = () => doStep(i);
+    $('code' + i).addEventListener('click', e => { const ln = e.target.closest('.ln.cur'); if (ln) doStep(i); });
+  });
+}
+
+function statusOf(S, i) {
+  const t = S.th[i];
+  if (t.st === 'done' || t.st === 'sleep' || t.st === 'blocked' || t.st === 'spin') return t.st;
+  return L.threads[i].code[t.pc].cs ? 'cs' : 'run';
+}
+
+function varsHtml(obj, prev) {
+  const ks = Object.keys(obj);
+  if (!ks.length) return '<span class="none">локальных переменных нет</span>';
+  return ks.map(k => `<span class="var${prev && JSON.stringify(prev[k]) !== JSON.stringify(obj[k]) ? ' chg' : ''}"><span class="k">${esc(k)}</span><span class="v">${esc(fmtVal(obj[k]))}</span></span>`).join('');
+}
+
+function render(stepped) {
+  const S = cur(); const P = stepped && hist.length > 1 ? hist[hist.length - 2] : null;
+  const o = outcome(L, S);
+  const broken = o && OUTCOMES[o].kind === 'bad';
+  S.th.forEach((t, i) => {
+    const st = statusOf(S, i);
+    const b = $('badge' + i); b.className = 'badge ' + st; b.textContent = STATUS[st];
+    const box = $('code' + i);
+    box.querySelectorAll('.ln.cur').forEach(n => n.classList.remove('cur', 'idle'));
+    const ln = box.querySelector(`[data-k="${t.pc}"]`);
+    if (ln && t.st !== 'done') { ln.classList.add('cur'); if (broken || !canStep(t)) ln.classList.add('idle'); }
+    $('loc' + i).innerHTML = varsHtml(t.loc, P && P.th[i].loc);
+    $('step' + i).disabled = broken || !canStep(t);
+  });
+  $('shared').innerHTML = varsHtml(S.sh, P && P.sh);
+  $('viewPanel').hidden = !L.view;
+  if (L.view) $('view').innerHTML = (L.draw ? L.draw(S, P) : '') + L.view(S).map(l => '<div>' + esc(l) + '</div>').join('');
+  $('undoBtn').disabled = hist.length < 2;
+  $('count').textContent = 'Шагов: ' + S.steps;
+  $('log').innerHTML = logs.length ? logs.map(l => `<li><span class="who t${l.who}">T${l.who}</span><span class="msg">${esc(l.msg)}</span></li>`).join('') : '<li class="empty">Пока пусто. Выберите поток и сделайте шаг.</li>';
+  const lg = $('log'); lg.scrollTop = lg.scrollHeight;
+
+  // баннер
+  let html = '';
+  const win = o && L.win && o === L.win;
+  const safeShown = !L.breakable && (S.steps >= SAFE_STEPS || o === 'finished');
+  if (o && OUTCOMES[o].kind === 'bad') {
+    html = `<div class="banner ${win ? 'win' : 'bad'}" role="status"><p class="bt">${esc(OUTCOMES[o].title)}</p>` +
+      (win ? `<p>${esc(L.winText)}</p>` : (L.breakable ? `<p>Код сломан, но цель уровня была другой. Отмените шаги и попробуйте ещё.</p>` : `<p>Этого не должно было случиться — сообщите преподавателю.</p>`)) +
+      `<div class="row">${win && saved.cur < LEVELS.length - 1 ? '<button class="btn primary" type="button" id="nextBtn">Следующий уровень →</button>' : ''}<button class="btn" type="button" id="bReset">Заново</button></div></div>`;
+  } else if (safeShown) {
+    html = `<div class="banner neutral" role="status"><p class="bt">Похоже, этот код не сломать. Почему?</p>
+      <details><summary>Показать объяснение</summary><p>${esc(L.safeText)}</p>${L.note ? `<p class="foot-note">Сноска. ${esc(L.note)}</p>` : ''}</details>
+      <div class="row">${saved.cur < LEVELS.length - 1 ? '<button class="btn primary" type="button" id="nextBtn">Следующий уровень →</button>' : ''}${o === 'finished' ? '<button class="btn" type="button" id="bReset">Заново</button>' : ''}</div></div>`;
+  } else if (o === 'finished') {
+    html = `<div class="banner neutral" role="status"><p class="bt">${esc(OUTCOMES.finished.title)}</p><p>Этот порядок шагов оказался безопасным. Отмените несколько шагов или начните заново и попробуйте другой.</p><div class="row"><button class="btn" type="button" id="bReset">Заново</button></div></div>`;
+  }
+  $('banner').innerHTML = html;
+  if ($('nextBtn')) $('nextBtn').onclick = () => load(saved.cur + 1);
+  if ($('bReset')) $('bReset').onclick = reset;
+
+  if ((win || safeShown) && !saved.done[L.id]) { saved.done[L.id] = true; persist(); renderLevelsOnly(); }
+}
+function renderLevelsOnly() {
+  const ls = $('levels').querySelectorAll('.mark');
+  LEVELS.forEach((lv, i) => { if (saved.done[lv.id]) { ls[i].textContent = '✓'; ls[i].classList.remove('lock'); } });
+}
+
+$('levels').addEventListener('click', e => { const b = e.target.closest('button[data-i]'); if (b) load(+b.dataset.i); });
+$('undoBtn').onclick = undo;
+$('resetBtn').onclick = reset;
+$('hintBtn').onclick = () => { const h = $('hint'); h.hidden = !h.hidden; $('hintBtn').textContent = h.hidden ? 'Подсказка' : 'Скрыть подсказку'; };
+$('resetProgress').onclick = () => { saved.done = {}; persist(); renderStatic(); render(false); };
+
+const THEMES = [null, 'light', 'dark'], TNAMES = ['как в системе', 'светлая', 'тёмная'];
+let ti = 0;
+try { const t = localStorage.getItem(STORE + '-theme'); ti = Math.max(0, THEMES.indexOf(t)); } catch (e) {}
+function applyTheme() { const t = THEMES[ti]; if (t) document.documentElement.setAttribute('data-theme', t); else document.documentElement.removeAttribute('data-theme'); $('themeBtn').textContent = 'Тема: ' + TNAMES[ti]; }
+$('themeBtn').onclick = () => { ti = (ti + 1) % 3; try { localStorage.setItem(STORE + '-theme', THEMES[ti] || ''); } catch (e) {} applyTheme(); };
+if (ti) applyTheme();
+
+document.addEventListener('keydown', e => {
+  if (e.ctrlKey || e.metaKey || e.altKey) return;
+  if (e.target.closest && e.target.closest('input,textarea,select')) return;
+  const dm = /^(?:Digit|Numpad)([1-9])$/.exec(e.code);
+  if (dm) { const i = +dm[1] - 1; if (i < L.threads.length) { e.preventDefault(); doStep(i); } }
+  else if (e.code === 'Backspace') { e.preventDefault(); undo(); }
+  else if (e.code === 'KeyR') { e.preventDefault(); reset(); }
+});
+
+load(saved.cur);
+}
+</script>
+
+</body></html>

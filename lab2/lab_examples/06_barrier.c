@@ -23,7 +23,7 @@ void *worker(void *arg) {
     long id = (long)arg;
     unsigned seed = id + 1;
     for (int stage = 1; stage <= STAGES; stage++) {
-        usleep(rand_r(&seed) % 500000);      /* работаем до 0,5 с */
+        usleep(rand_r(&seed) % 5000000);      /* работаем до 0,5 с */
         printf("поток %ld: закончил этап %d\n", id, stage);
         pthread_barrier_wait(&barrier);      /* ждём остальных */
     }
